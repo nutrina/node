@@ -1,0 +1,208 @@
+name: images
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Monday 06:00 UTC. Picks up new Node releases and distro security updates.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: images-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      flavors: ${{ steps.gen.outputs.flavors }}
+      image: ${{ steps.gen.outputs.image }}
+      platforms: ${{ steps.gen.outputs.platforms }}
+      grype: ${{ steps.gen.outputs.grype }}
+      fail_on: ${{ steps.gen.outputs.fail_on }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: gen
+        run: |
+          set -euo pipefail
+          jq -e '.image and .platforms and .grype and .failOn and (.flavors | length > 0)' flavors.json >/dev/null
+          {
+            echo "image=$(jq -r '.image' flavors.json)"
+            echo "platforms=$(jq -r '.platforms | join(",")' flavors.json)"
+            echo "grype=$(jq -r '.grype' flavors.json)"
+            echo "fail_on=$(jq -r '.failOn' flavors.json)"
+            echo "flavors<<EOF"
+            jq -c '.flavors' flavors.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: ${{ fromJson(needs.prepare.outputs.flavors) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build ${{ matrix.flavor.tag }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          pull: true
+          platforms: ${{ needs.prepare.outputs.platforms }}
+          outputs: type=oci,dest=oci-image.tar
+          build-args: |
+            NODE_TAG=${{ matrix.flavor.nodeTag }}
+            IMAGE_REVISION=${{ github.sha }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=${{ matrix.flavor.tag }}
+          cache-to: type=gha,scope=${{ matrix.flavor.tag }},mode=max,ignore-error=true
+
+      - name: Install Grype and Skopeo
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          curl -sSfL https://get.anchore.io/grype | sh -s -- -b /usr/local/bin "${{ needs.prepare.outputs.grype }}"
+          grype version
+          skopeo --version
+
+      - name: Security scan built image
+        run: |
+          set -euo pipefail
+          fail_on="${{ needs.prepare.outputs.fail_on }}"
+          case "$fail_on" in
+            critical) sevs='["Critical"]' ;;
+            high) sevs='["High","Critical"]' ;;
+            medium) sevs='["Medium","High","Critical"]' ;;
+            *) echo "unknown failOn: $fail_on" >&2; exit 1 ;;
+          esac
+
+          # Scan the archive that publish will copy. A failure here skips the push.
+          failed=0
+          IFS=',' read -ra platforms <<< "${{ needs.prepare.outputs.platforms }}"
+          for platform in "${platforms[@]}"; do
+            safe="${platform//\//-}"
+            echo "Scanning ${platform}"
+            grype "oci-archive:oci-image.tar" --platform "$platform" --only-fixed -o json > "grype-fixed-${safe}.json"
+            grype "oci-archive:oci-image.tar" --platform "$platform" -o json > "grype-full-${safe}.json"
+            grype "oci-archive:oci-image.tar" --platform "$platform" --only-fixed -o sarif > "grype-${safe}.sarif"
+
+            echo "Fixable findings at or above ${fail_on} for ${platform}:"
+            jq -r --argjson sevs "$sevs" '
+              .matches[]
+              | select(.vulnerability.severity as $s | $sevs | index($s))
+              | "\(.vulnerability.severity)\t\(.artifact.name)@\(.artifact.version)\t\(.vulnerability.id)\t\(.artifact.type)"
+            ' "grype-fixed-${safe}.json" | sort -u
+
+            count=$(jq -r --argjson sevs "$sevs" '
+              [.matches[] | select(.vulnerability.severity as $s | $sevs | index($s))] | length
+            ' "grype-fixed-${safe}.json")
+            echo "${platform} count=${count}"
+            if [ "$count" -gt 0 ]; then
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "Grype reported fixable vulnerabilities. The image was not pushed." >&2
+            exit 1
+          fi
+          touch scan-passed
+
+      - name: Load the amd64 image
+        run: |
+          set -euo pipefail
+          skopeo copy --override-os linux --override-arch amd64 \
+            "oci-archive:${PWD}/oci-image.tar" \
+            "docker-daemon:local/node:${{ matrix.flavor.tag }}"
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          image="local/node:${{ matrix.flavor.tag }}"
+          expected="${{ matrix.flavor.nodeTag }}"
+          expected="v${expected%%-*}"
+          docker run --rm "$image" node -e "if (process.version !== '${expected}') { console.error(process.version); process.exit(1) } console.log(process.version)"
+          docker run --rm "$image" npm --version
+          docker run --rm --user node "$image" sh -c 'mkdir -p "$HOME/app" && cd "$HOME/app" && npm init -y >/dev/null && npm install --silent left-pad@1.0.0 && node -e "if (require(\"left-pad\")(\"x\", 3) !== \"  x\") process.exit(1)"'
+
+      - name: Upload Grype reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: grype-${{ matrix.flavor.tag }}
+          path: grype-*
+          retention-days: 30
+
+      - name: Upload amd64 Grype SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: grype-linux-amd64.sarif
+          category: grype-${{ matrix.flavor.tag }}-linux-amd64
+
+      - name: Upload arm64 Grype SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: grype-linux-arm64.sarif
+          category: grype-${{ matrix.flavor.tag }}-linux-arm64
+
+      - name: Name the published tags
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          test -f scan-passed
+          image="${{ needs.prepare.outputs.image }}"
+          tag="${{ matrix.flavor.tag }}"
+          node_version=$(docker run --rm "local/node:${tag}" node -p 'process.version.slice(1)')
+          date=$(date -u +%Y%m%d)
+          # A tag like 24.22.2-alpine already includes the full Node version.
+          # A tag like 24-alpine does not, so append the version from the image.
+          if [[ "$tag" == "$node_version-"* || "$tag" == "$node_version" ]]; then
+            version_tag="$tag"
+          else
+            version_tag="${node_version}-${tag#*-}"
+          fi
+          {
+            echo "${image}:${tag}"
+            echo "${image}:${version_tag}"
+            echo "${image}:${version_tag}-${date}"
+            jq -r --arg t "$tag" --arg image "$image" \
+              '.flavors[] | select(.tag == $t) | .aliases[]? | "\($image):\(.)"' flavors.json
+          } | awk 'NF && !seen[$0]++' | tee image-tags.txt
+
+      - name: Push scanned image
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -f scan-passed
+          test -f oci-image.tar
+          test -s image-tags.txt
+          echo "$DOCKERHUB_TOKEN" | skopeo login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          mapfile -t tags < image-tags.txt
+          primary="docker.io/${tags[0]}"
+          skopeo copy --all "oci-archive:${PWD}/oci-image.tar" "docker://${primary}"
+          for tag in "${tags[@]:1}"; do
+            [ -n "$tag" ] || continue
+            skopeo copy --all "docker://${primary}" "docker://docker.io/${tag}"
+          done

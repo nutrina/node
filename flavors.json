@@ -1,0 +1,18 @@
+{
+  "image": "nutrina/node",
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "grype": "v0.121.0",
+  "failOn": "medium",
+  "flavors": [
+    {
+      "tag": "24.22.2-alpine",
+      "nodeTag": "24.22.2-alpine",
+      "aliases": []
+    },
+    {
+      "tag": "24.22.2-bookworm-slim",
+      "nodeTag": "24.22.2-bookworm-slim",
+      "aliases": []
+    }
+  ]
+}
