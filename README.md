@@ -69,6 +69,22 @@ Add an object to `flavors.json`. `nodeTag` is the official tag. `tag` is the nam
 
 When the Grype step fails, it prints the package, the installed version, and the fixed version. Put the fixed version in `patches.json` when it is the same major. When the fix is only on a newer major, move the `npm` pin instead and rebuild. A pin is skipped when the base image is already newer, and the build fails when the only installed copy is a different major.
 
+## Ignored advisories
+
+Some fixes cannot be applied yet. For example, the fixed version may be on a new major that npm does not bundle, and `patch-image.js` will not swap npm's copy to a new major. Those advisories go in `.grype.yaml`, which every scan uses. Each rule names the advisory, the package, and the location, so the same advisory in any other package still fails the gate.
+
+| Advisory | Package | Why it is ignored |
+| --- | --- | --- |
+| GHSA-3g3m-2fjr-6pw4 | `glob` 13 bundled with npm | Fixed only in glob 14.0.2. npm 11.21.2 and 12.2.2 still bundle glob 13. |
+| GHSA-g3hv-75wg-m249 | `minimatch` 10 bundled with npm | Fixed only in minimatch 11.0.1. npm 11.21.2 and 12.2.2 still bundle minimatch 10. |
+
+After the scan, CI runs `scripts/check-ignored-fixes.js`. It fails the job before the push when an ignored advisory has a fix this repo can apply:
+
+- the advisory lists a fixed version on the installed major, so the fix can go in `patches.json`, or
+- the finding is inside npm, and a newer npm release bundles only fixed copies. The releases checked are the latest on the pinned npm major and npm's `latest` tag.
+
+The log and the job summary name the fix to apply. Apply it and remove the rule from `.grype.yaml` in the same change. A rule that matches nothing in a flavor gets a warning, not a failure, because the rules are shared across flavors.
+
 Build one flavor locally:
 
 ```sh
