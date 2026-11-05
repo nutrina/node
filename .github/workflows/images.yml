@@ -12,6 +12,8 @@ on:
 permissions:
   contents: read
   security-events: write
+  # Read image archives that pull request runs uploaded.
+  actions: read
 
 concurrency:
   group: images-${{ github.workflow }}-${{ github.ref }}
@@ -56,7 +58,53 @@ jobs:
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
+      # The image depends only on these inputs, plus the base image and distro
+      # packages at build time. A push to main reuses the archive a pull request
+      # built and tested from the same inputs, rather than building it again.
+      - name: Fingerprint the build inputs
+        id: inputs
+        run: |
+          set -euo pipefail
+          hash=$(
+            {
+              sha256sum Dockerfile .dockerignore patches.json scripts/patch-image.js
+              echo "nodeTag=${{ matrix.flavor.nodeTag }}"
+              echo "platforms=${{ needs.prepare.outputs.platforms }}"
+            } | sha256sum | cut -c1-16
+          )
+          echo "artifact=oci-${{ matrix.flavor.tag }}-${hash}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Find the image a pull request built
+        id: reuse
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ steps.inputs.outputs.artifact }}
+          REPO_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+          # Only accept runs on branches of this repository. A pull request from a
+          # fork runs the fork's workflow and could upload any archive under this name.
+          run_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT}&per_page=100" --jq "
+            [.artifacts[]
+              | select(.expired | not)
+              | select(.workflow_run.repository_id == ${REPO_ID})
+              | select(.workflow_run.head_repository_id == ${REPO_ID})]
+            | sort_by(.created_at) | last | .workflow_run.id // empty")
+
+          if [ -n "$run_id" ] && gh run download "$run_id" -R "$GITHUB_REPOSITORY" -n "$ARTIFACT" -D . && [ -f oci-image.tar ]; then
+            url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+            echo "Reusing ${ARTIFACT} from ${url}"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.flavor.tag }}: reused the image built and tested in [run ${run_id}](${url}). Not rebuilt." >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -f oci-image.tar
+            echo "No usable pull request archive named ${ARTIFACT}. Building."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build ${{ matrix.flavor.tag }}
+        if: steps.reuse.outputs.found != 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -148,6 +196,18 @@ jobs:
           docker run --rm "$image" node -e "if (process.version !== '${expected}') { console.error(process.version); process.exit(1) } console.log(process.version)"
           docker run --rm "$image" npm --version
           docker run --rm --user node "$image" sh -c 'mkdir -p "$HOME/app" && cd "$HOME/app" && npm init -y >/dev/null && npm install --silent left-pad@1.0.0 && node -e "if (require(\"left-pad\")(\"x\", 3) !== \"  x\") process.exit(1)"'
+
+      # Runs only after the scan, the ignored-advisory check, and the smoke test
+      # pass. Forks are excluded: main never reuses their archives.
+      - name: Keep the image for the merge
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.inputs.outputs.artifact }}
+          path: oci-image.tar
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
 
       - name: Upload Grype reports
         if: always()
