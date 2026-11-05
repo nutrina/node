@@ -97,9 +97,9 @@ jobs:
           for platform in "${platforms[@]}"; do
             safe="${platform//\//-}"
             echo "Scanning ${platform}"
-            grype "oci-archive:oci-image.tar" --platform "$platform" --only-fixed -o json > "grype-fixed-${safe}.json"
-            grype "oci-archive:oci-image.tar" --platform "$platform" -o json > "grype-full-${safe}.json"
-            grype "oci-archive:oci-image.tar" --platform "$platform" --only-fixed -o sarif > "grype-${safe}.sarif"
+            grype "oci-archive:oci-image.tar" -c .grype.yaml --platform "$platform" --only-fixed -o json > "grype-fixed-${safe}.json"
+            grype "oci-archive:oci-image.tar" -c .grype.yaml --platform "$platform" -o json > "grype-full-${safe}.json"
+            grype "oci-archive:oci-image.tar" -c .grype.yaml --platform "$platform" --only-fixed -o sarif > "grype-${safe}.sarif"
 
             echo "Fixable findings at or above ${fail_on} for ${platform}:"
             jq -r --argjson sevs "$sevs" '
@@ -122,6 +122,15 @@ jobs:
             exit 1
           fi
           touch scan-passed
+
+      # Advisories ignored in .grype.yaml must not stay ignored once a fix can
+      # be applied. A failure here skips the push.
+      - name: Check ignored advisories for fixes
+        run: |
+          set -euo pipefail
+          rules="${RUNNER_TEMP}/grype-ignore-rules.json"
+          yq -o=json '.ignore // []' .grype.yaml > "$rules"
+          node scripts/check-ignored-fixes.js "$rules" patches.json grype-full-*.json
 
       - name: Load the amd64 image
         run: |
