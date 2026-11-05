@@ -173,8 +173,8 @@ jobs:
           sarif_file: grype-linux-arm64.sarif
           category: grype-${{ matrix.flavor.tag }}-linux-arm64
 
+      # Runs on every event so pull requests show the tags a merge would publish.
       - name: Name the published tags
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           test -f scan-passed
@@ -197,6 +197,16 @@ jobs:
               '.flavors[] | select(.tag == $t) | .aliases[]? | "\($image):\(.)"' flavors.json
           } | awk 'NF && !seen[$0]++' | tee image-tags.txt
 
+          if [[ "${{ github.ref }}" != 'refs/heads/main' || "${{ github.event_name }}" == 'pull_request' ]]; then
+            {
+              echo "### ${tag}: not pushed (${{ github.event_name }} on ${{ github.ref_name }})"
+              echo
+              echo "A run on \`main\` would publish:"
+              echo
+              sed 's/.*/- `&`/' image-tags.txt
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Push scanned image
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
@@ -215,3 +225,21 @@ jobs:
             [ -n "$tag" ] || continue
             skopeo copy --all "docker://${primary}" "docker://docker.io/${tag}"
           done
+
+          # Digest of the multi-platform index as stored in the registry.
+          digest="sha256:$(skopeo inspect --raw "docker://${primary}" | sha256sum | cut -d' ' -f1)"
+          echo "Published ${tags[*]} at ${digest}"
+          {
+            echo "### ${{ matrix.flavor.tag }}: published"
+            echo
+            echo "| Tag | Digest |"
+            echo "| --- | --- |"
+            for tag in "${tags[@]}"; do
+              [ -n "$tag" ] || continue
+              echo "| \`docker.io/${tag}\` | \`${digest}\` |"
+            done
+            echo
+            echo '```sh'
+            echo "docker pull docker.io/${tags[0]%%:*}@${digest}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -50,6 +50,8 @@ Each flavor is built once, for `linux/amd64` and `linux/arm64`, into an OCI arch
 
 After the scan passes, CI loads the amd64 image from the same archive and runs the smoke test (`node`, `npm`, and a real `npm install` as the `node` user). The push copies that archive to Docker Hub. It does not build the image again, and it checks that the scan wrote its pass marker. A failed scan or a failed smoke test skips the push. Pull requests build and scan, and they do not push. The Grype reports are uploaded as workflow artifacts.
 
+Each image job writes its tags to the run's summary page. On `main`, the summary lists every published tag with the digest of the pushed image and a `docker pull` command pinned to that digest. On pull requests, it lists the tags a merge would publish.
+
 Publishing needs two repository secrets:
 
 - `DOCKERHUB_USERNAME`
