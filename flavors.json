@@ -13,6 +13,22 @@
       "tag": "24.22.2-bookworm-slim",
       "nodeTag": "24.22.2-bookworm-slim",
       "aliases": []
+    },
+    {
+      "tag": "1.31.8-alpine-slim",
+      "image": "nutrina/nginx",
+      "base": "nginx:1.31.8-alpine-slim",
+      "dockerfile": "apk.Dockerfile",
+      "smoke": "nginx",
+      "aliases": []
+    },
+    {
+      "tag": "1.27.3-alpine",
+      "image": "nutrina/golang",
+      "base": "golang:1.27.3-alpine",
+      "dockerfile": "apk.Dockerfile",
+      "smoke": "go",
+      "aliases": []
     }
   ]
 }

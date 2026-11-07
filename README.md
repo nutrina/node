@@ -8,14 +8,18 @@ FROM nutrina/node:24.22.2-bookworm-slim
 
 The images keep the official entrypoint, command, and root user, so they can replace `node:24.22.2-alpine` and `node:24.22.2-bookworm-slim`.
 
+The same pipeline also publishes patched Alpine images of two other official images, `nutrina/nginx` and `nutrina/golang` (see [Other images](#other-images)).
+
 ## Flavors
 
-`flavors.json` is the list CI builds. Both entries pin the official patch release.
+`flavors.json` is the list CI builds. Every entry pins the official patch release.
 
-| Published tag | Official base |
+| Published image | Official base |
 | --- | --- |
-| `24.22.2-alpine` | `node:24.22.2-alpine` |
-| `24.22.2-bookworm-slim` | `node:24.22.2-bookworm-slim` |
+| `nutrina/node:24.22.2-alpine` | `node:24.22.2-alpine` |
+| `nutrina/node:24.22.2-bookworm-slim` | `node:24.22.2-bookworm-slim` |
+| `nutrina/nginx:1.31.8-alpine-slim` | `nginx:1.31.8-alpine-slim` |
+| `nutrina/golang:1.27.3-alpine` | `golang:1.27.3-alpine` |
 
 Each publish also pushes a date tag, such as `nutrina/node:24.22.2-bookworm-slim-20261029`. The version tag moves when that Node release is rebuilt with newer packages. The date tag stays on that build.
 
@@ -41,6 +45,20 @@ On 29 October 2026, Grype 0.121.0 reported these fixable findings in the officia
 Upgrading to npm 11.21.1 cleared every fixable package on the Bookworm image except `undici@6.29.0` and `ip-address@10.7.2`. `patches.json` pins those to `6.29.1` and `10.7.4`. Alpine gets the same pins.
 
 Grype still lists High findings in packages such as glibc, perl, ncurses, and busybox. Those are marked wont-fix or have no fixed package, so a rebuild cannot clear them. The CI gate fails on fixable findings at medium or above. The full report is uploaded as a workflow artifact.
+
+## Other images
+
+A flavor with `image`, `base` and `dockerfile` is not Node. It is built from `apk.Dockerfile`, which takes the official image (`BASE_IMAGE`) and runs `apk upgrade`, and nothing else: there is no npm to patch and no Node to run `scripts/patch-image.js`. `/etc/apk-image-patch.txt` lists what was upgraded.
+
+Alpine often publishes a fix days before the official image is rebuilt with it. On 7 November 2026, every `nginx:*-alpine*` and `golang:*-alpine` tag still shipped zlib 1.3.2-r1 (CVE-2026-4738, critical), while Alpine already had 1.4-r0. These flavors close that gap. The scan and the push are the same as for Node. `smoke` chooses the smoke test: `nginx` serves its welcome page, `go` builds and runs a binary.
+
+```json
+{"tag": "1.31.8-alpine-slim", "image": "nutrina/nginx", "base": "nginx:1.31.8-alpine-slim", "dockerfile": "apk.Dockerfile", "smoke": "nginx", "aliases": []}
+```
+
+The rules in `.grype.yaml` are npm's, so on these images they match nothing and `check-ignored-fixes.js` warns, as it does for any flavor a rule does not apply to.
+
+The first push of `nutrina/nginx` and `nutrina/golang` creates those Docker Hub repositories. `DOCKERHUB_TOKEN` needs write access to them, which a token scoped to `nutrina/node` alone does not have.
 
 ## CI
 
