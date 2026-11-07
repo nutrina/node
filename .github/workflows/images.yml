@@ -28,6 +28,7 @@ jobs:
       platforms: ${{ steps.gen.outputs.platforms }}
       grype: ${{ steps.gen.outputs.grype }}
       fail_on: ${{ steps.gen.outputs.fail_on }}
+      date: ${{ steps.gen.outputs.date }}
     steps:
       - uses: actions/checkout@v7
       - id: gen
@@ -39,6 +40,9 @@ jobs:
             echo "platforms=$(jq -r '.platforms | join(",")' flavors.json)"
             echo "grype=$(jq -r '.grype' flavors.json)"
             echo "fail_on=$(jq -r '.failOn' flavors.json)"
+            # One date for the whole run, so every dated tag and the release agree
+            # even when the jobs finish on either side of midnight UTC.
+            echo "date=$(date -u +%Y%m%d)"
             echo "flavors<<EOF"
             jq -c '.flavors' flavors.json
             echo "EOF"
@@ -81,6 +85,7 @@ jobs:
             } | sha256sum | cut -c1-16
           )
           echo "artifact=oci-${IMAGE//\//-}-${TAG}-${hash}" | tee -a "$GITHUB_OUTPUT"
+          echo "slug=${IMAGE//\//-}-${TAG}" | tee -a "$GITHUB_OUTPUT"
 
       - name: Find the image a pull request built
         id: reuse
@@ -275,7 +280,7 @@ jobs:
           test -f scan-passed
           image="${{ matrix.flavor.image || needs.prepare.outputs.image }}"
           tag="${{ matrix.flavor.tag }}"
-          date=$(date -u +%Y%m%d)
+          date="${{ needs.prepare.outputs.date }}"
           if [ "${{ matrix.flavor.smoke || 'node' }}" = node ]; then
             node_version=$(docker run --rm "local/image:${tag}" node -p 'process.version.slice(1)')
             # A tag like 24.22.2-alpine already includes the full Node version.
@@ -308,6 +313,7 @@ jobs:
           fi
 
       - name: Push scanned image
+        id: push
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           # A variable, not a secret: GitHub masks every secret value in logs and
@@ -335,6 +341,7 @@ jobs:
           # Digest of the multi-platform index as stored in the registry.
           digest="sha256:$(skopeo inspect --raw "docker://${primary}" | sha256sum | cut -d' ' -f1)"
           echo "Published ${tags[*]} at ${digest}"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           {
             echo "### ${tags[0]}: published"
             echo
@@ -348,4 +355,120 @@ jobs:
             echo '```sh'
             echo "docker pull docker.io/${tags[0]%%:*}@${digest}"
             echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Feeds the release that the publish job writes. Runs even when an earlier
+      # step failed, so the release can list the images that were not published.
+      - name: Record the result
+        if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ matrix.flavor.image || needs.prepare.outputs.image }}
+          TAG: ${{ matrix.flavor.tag }}
+          BASE: ${{ matrix.flavor.base || format('node:{0}', matrix.flavor.nodeTag) }}
+          KIND: ${{ matrix.flavor.smoke || 'node' }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          status=failed
+          [ "$PUSH_OUTCOME" = success ] && [ -n "$DIGEST" ] && status=published
+
+          local_image="local/image:${TAG}"
+          revision=""
+          changes=null
+          if docker image inspect "$local_image" >/dev/null 2>&1; then
+            revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$local_image")
+            # What the build changed, as the image recorded it.
+            if [ "$KIND" = node ]; then
+              record=/etc/node-image-patch.json
+            else
+              record=/etc/apk-image-patch.txt
+            fi
+            if raw=$(docker run --rm --entrypoint cat "$local_image" "$record"); then
+              if [ "$KIND" = node ]; then
+                jq -e . <<< "$raw" >/dev/null && changes="$raw"
+              else
+                changes=$(printf '%s\n' "$raw" | jq -Rn '[inputs | select(length > 0)]')
+              fi
+            fi
+          fi
+
+          tags='[]'
+          if [ "$status" = published ]; then
+            tags=$(jq -R 'select(length > 0)' image-tags.txt | jq -s .)
+          fi
+
+          jq -n \
+            --arg image "$IMAGE" --arg tag "$TAG" --arg status "$status" \
+            --argjson tags "$tags" --arg digest "$DIGEST" --arg base "$BASE" \
+            --arg revision "$revision" --argjson changes "$changes" \
+            '{image: $image, tag: $tag, status: $status, tags: $tags, digest: $digest,
+              base: $base, revision: $revision, changes: $changes}' \
+            | tee "result-${{ steps.inputs.outputs.slug }}.json"
+
+      - name: Upload the result
+        if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: result-${{ steps.inputs.outputs.slug }}
+          path: result-${{ steps.inputs.outputs.slug }}.json
+          retention-days: 7
+          overwrite: true
+
+  # One release per publish day, listing every image published that day. A
+  # second run on the same day, such as a re-run of failed jobs, updates it.
+  publish:
+    needs: [prepare, image]
+    if: always() && needs.prepare.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: result-*
+          path: results
+          merge-multiple: true
+
+      - name: Write the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DATE: ${{ needs.prepare.outputs.date }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          release="images-${RELEASE_DATE}"
+          title="Images ${RELEASE_DATE:0:4}-${RELEASE_DATE:4:2}-${RELEASE_DATE:6:2}"
+
+          previous=-
+          exists=false
+          if gh release view "$release" >/dev/null 2>&1; then
+            exists=true
+            if gh release download "$release" -p images.json -D previous 2>/dev/null; then
+              previous=previous/images.json
+            fi
+          fi
+
+          published=$(node scripts/release-notes.js results "$previous" release)
+          if [ "$published" -eq 0 ]; then
+            echo "No image was published. No release." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$exists" = true ]; then
+            gh release edit "$release" --title "$title" --notes-file release/notes.md --latest
+            gh release upload "$release" release/images.json --clobber
+          else
+            gh release create "$release" --title "$title" --notes-file release/notes.md \
+              --target "$GITHUB_SHA" --latest release/images.json
+          fi
+
+          url=$(gh release view "$release" --json url --jq .url)
+          {
+            echo "## [${title}](${url})"
+            echo
+            cat release/notes.md
           } >> "$GITHUB_STEP_SUMMARY"

@@ -72,6 +72,12 @@ A merge to `main` does not build the image again when a pull request already bui
 
 Each image job writes its tags to the run's summary page. On `main`, the summary lists every published tag with the digest of the pushed image and a `docker pull` command pinned to that digest. On pull requests, it lists the tags a merge would publish.
 
+### Releases
+
+The [latest release](https://github.com/nutrina/node/releases/latest) lists every image currently published. After the image jobs on `main` finish, the `publish` job writes one release per publish day, named `images-YYYYMMDD` after the date in that day's tags. Its notes have a table of each image with its tags, official base, and digest, a `docker pull` line pinned to each digest, and what each build changed (npm and its patched dependencies for Node, upgraded apk packages for nginx and golang). Images that failed are listed under "Not published", and their previous tags stay as they were. `images.json` is attached for scripts.
+
+A second run on the same day, such as a re-run of failed jobs, updates that day's release rather than creating another one. An image published earlier that day stays listed even if a later run fails it. When no image was published, no release is written. Only the `publish` job can write to the repository (`contents: write`), and each release adds a git tag on the commit that was published.
+
 Publishing needs a repository variable and a repository secret:
 
 - `DOCKERHUB_USERNAME`, a variable. It is not a secret on purpose: GitHub masks secret values in logs and summaries, and the username is part of every image name.
