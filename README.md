@@ -68,10 +68,14 @@ Each flavor is built once, for `linux/amd64` and `linux/arm64`, into an OCI arch
 
 After the scan passes, CI loads the amd64 image from the same archive and runs the smoke test (`node`, `npm`, and a real `npm install` as the `node` user). The push copies that archive to Docker Hub. It does not build the image again, and it checks that the scan wrote its pass marker. A failed scan or a failed smoke test skips the push. Pull requests build and scan, and they do not push. The Grype reports are uploaded as workflow artifacts.
 
-Publishing needs two repository secrets:
+A merge to `main` does not build the image again when a pull request already built it. Pull request runs from branches in this repository upload the tested OCI archive for 7 days. Its name includes a hash of the build inputs: the flavor's Dockerfile, `.dockerignore`, `patches.json`, `scripts/patch-image.js`, the flavor's `image`, `tag`, `nodeTag` and `base`, and the platforms. A push to `main` looks for an archive with the same hash and uses it in place of a build. It still scans that archive with the current Grype database, runs the ignored-advisory check and the smoke test, and only then pushes. The summary links the run that built it. When no archive matches, for example after it expired or a commit on `main` changed an input, `main` builds as before. Archives from forks are never used. Scheduled and manual runs always build, to pick up new base images and distro updates. A reused image's `org.opencontainers.image.revision` label is the pull request commit it was built from.
 
-- `DOCKERHUB_USERNAME`
-- `DOCKERHUB_TOKEN`, a Docker Hub access token with write access
+Each image job writes its tags to the run's summary page. On `main`, the summary lists every published tag with the digest of the pushed image and a `docker pull` command pinned to that digest. On pull requests, it lists the tags a merge would publish.
+
+Publishing needs a repository variable and a repository secret:
+
+- `DOCKERHUB_USERNAME`, a variable. It is not a secret on purpose: GitHub masks secret values in logs and summaries, and the username is part of every image name.
+- `DOCKERHUB_TOKEN`, a secret: a Docker Hub access token with write access
 
 The published repository name is the `image` field in `flavors.json`.
 

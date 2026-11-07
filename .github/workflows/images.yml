@@ -12,6 +12,8 @@ on:
 permissions:
   contents: read
   security-events: write
+  # Read image archives that pull request runs uploaded.
+  actions: read
 
 concurrency:
   group: images-${{ github.workflow }}-${{ github.ref }}
@@ -56,10 +58,64 @@ jobs:
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
+      # The image depends only on these inputs, plus the base image and distro
+      # packages at build time. A push to main reuses the archive a pull request
+      # built and tested from the same inputs, rather than building it again.
+      # Aliases are left out: they name the image and do not change it.
+      - name: Fingerprint the build inputs
+        id: inputs
+        env:
+          IMAGE: ${{ matrix.flavor.image || needs.prepare.outputs.image }}
+          TAG: ${{ matrix.flavor.tag }}
+          DOCKERFILE: ${{ matrix.flavor.dockerfile || 'Dockerfile' }}
+        run: |
+          set -euo pipefail
+          hash=$(
+            {
+              sha256sum "$DOCKERFILE" .dockerignore patches.json scripts/patch-image.js
+              echo "image=${IMAGE}"
+              echo "tag=${TAG}"
+              echo "nodeTag=${{ matrix.flavor.nodeTag }}"
+              echo "base=${{ matrix.flavor.base }}"
+              echo "platforms=${{ needs.prepare.outputs.platforms }}"
+            } | sha256sum | cut -c1-16
+          )
+          echo "artifact=oci-${IMAGE//\//-}-${TAG}-${hash}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Find the image a pull request built
+        id: reuse
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ steps.inputs.outputs.artifact }}
+          REPO_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+          # Only accept runs on branches of this repository. A pull request from a
+          # fork runs the fork's workflow and could upload any archive under this name.
+          run_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT}&per_page=100" --jq "
+            [.artifacts[]
+              | select(.expired | not)
+              | select(.workflow_run.repository_id == ${REPO_ID})
+              | select(.workflow_run.head_repository_id == ${REPO_ID})]
+            | sort_by(.created_at) | last | .workflow_run.id // empty")
+
+          if [ -n "$run_id" ] && gh run download "$run_id" -R "$GITHUB_REPOSITORY" -n "$ARTIFACT" -D . && [ -f oci-image.tar ]; then
+            url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+            echo "Reusing ${ARTIFACT} from ${url}"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.flavor.tag }}: reused the image built and tested in [run ${run_id}](${url}). Not rebuilt." >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -f oci-image.tar
+            echo "No usable pull request archive named ${ARTIFACT}. Building."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # A flavor names its own image, Dockerfile and base when it is not Node (apk.Dockerfile:
       # nginx, golang); a Node flavor uses the defaults. The cache scope carries the image, since
       # two images may one day share a tag.
       - name: Build ${{ matrix.flavor.image || needs.prepare.outputs.image }}:${{ matrix.flavor.tag }}
+        if: steps.reuse.outputs.found != 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -176,6 +232,18 @@ jobs:
             *) echo "unknown smoke test: ${{ matrix.flavor.smoke }}" >&2; exit 1 ;;
           esac
 
+      # Runs only after the scan, the ignored-advisory check, and the smoke test
+      # pass. Forks are excluded: main never reuses their archives.
+      - name: Keep the image for the merge
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.inputs.outputs.artifact }}
+          path: oci-image.tar
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
+
       - name: Upload Grype reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -200,8 +268,8 @@ jobs:
           sarif_file: grype-linux-arm64.sarif
           category: grype-${{ matrix.flavor.tag }}-linux-arm64
 
+      # Runs on every event so pull requests show the tags a merge would publish.
       - name: Name the published tags
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           test -f scan-passed
@@ -229,16 +297,32 @@ jobs:
               '.flavors[] | select(.tag == $t) | .aliases[]? | "\($image):\(.)"' flavors.json
           } | awk 'NF && !seen[$0]++' | tee image-tags.txt
 
+          if [[ "${{ github.ref }}" != 'refs/heads/main' || "${{ github.event_name }}" == 'pull_request' ]]; then
+            {
+              echo "### ${image}:${tag}: not pushed (${{ github.event_name }} on ${{ github.ref_name }})"
+              echo
+              echo "A run on \`main\` would publish:"
+              echo
+              sed 's/.*/- `&`/' image-tags.txt
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Push scanned image
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          # A variable, not a secret: GitHub masks every secret value in logs and
+          # summaries, which hid the "nutrina" in every image name as "***".
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
           test -f scan-passed
           test -f oci-image.tar
           test -s image-tags.txt
+          if [ -z "$DOCKERHUB_USERNAME" ]; then
+            echo "Set the DOCKERHUB_USERNAME repository variable (Settings > Secrets and variables > Actions > Variables)." >&2
+            exit 1
+          fi
           echo "$DOCKERHUB_TOKEN" | skopeo login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
           mapfile -t tags < image-tags.txt
           primary="docker.io/${tags[0]}"
@@ -247,3 +331,21 @@ jobs:
             [ -n "$tag" ] || continue
             skopeo copy --all "docker://${primary}" "docker://docker.io/${tag}"
           done
+
+          # Digest of the multi-platform index as stored in the registry.
+          digest="sha256:$(skopeo inspect --raw "docker://${primary}" | sha256sum | cut -d' ' -f1)"
+          echo "Published ${tags[*]} at ${digest}"
+          {
+            echo "### ${tags[0]}: published"
+            echo
+            echo "| Tag | Digest |"
+            echo "| --- | --- |"
+            for tag in "${tags[@]}"; do
+              [ -n "$tag" ] || continue
+              echo "| \`docker.io/${tag}\` | \`${digest}\` |"
+            done
+            echo
+            echo '```sh'
+            echo "docker pull docker.io/${tags[0]%%:*}@${digest}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
