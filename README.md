@@ -19,7 +19,7 @@ The same pipeline also publishes patched Alpine images of two other official ima
 | `nutrina/node:24.22.2-alpine` | `node:24.22.2-alpine` |
 | `nutrina/node:24.22.2-bookworm-slim` | `node:24.22.2-bookworm-slim` |
 | `nutrina/nginx:1.31.8-alpine-slim` | `nginx:1.31.8-alpine-slim` |
-| `nutrina/golang:1.27.3-alpine` | `golang:1.27.3-alpine` |
+| `nutrina/golang:1.27.4-alpine` | `golang:1.27.4-alpine` |
 
 Each publish also pushes a date tag, such as `nutrina/node:24.22.2-bookworm-slim-20261029`. The version tag moves when that Node release is rebuilt with newer packages. The date tag stays on that build.
 
