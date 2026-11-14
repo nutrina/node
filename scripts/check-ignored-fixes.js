@@ -28,10 +28,46 @@ const path = require('node:path')
 
 const NPM_DIR = '/usr/local/lib/node_modules/npm/'
 
+const HELP = `Usage: check-ignored-fixes.js <ignore-rules.json> <patches.json> <grype-report.json>...
+
+Makes sure no advisory stays ignored in .grype.yaml once this repo can apply
+a fix for it. Fails (exit 1) when an ignored advisory can be fixed with a
+change to patches.json:
+
+  - the advisory lists a fixed version on the installed major, so the package
+    can be pinned in patches.json, or
+  - the copy is bundled with npm, and a newer npm release (the latest on the
+    pinned major, or npm's \`latest\` tag) bundles only fixed copies, so the
+    npm pin can move.
+
+A fix only on a new major (for example glob 14 for npm's glob 13) does not
+count: patch-image.js never swaps a package to a new major. Those advisories
+stay ignored until npm bundles the fixed major.
+
+Arguments:
+  <ignore-rules.json>  The \`ignore\` list from .grype.yaml, as JSON.
+  <patches.json>       Only the \`npm\` pin is read.
+  <grype-report.json>  Full Grype JSON reports made with .grype.yaml. The
+                       ignored findings are read from \`ignoredMatches\`.
+
+Output, one line per finding:
+  OK    no applicable fix yet
+  FIX   the fix to apply; then remove the rule from .grype.yaml
+  WARN  the rule matched nothing in these reports (does not fail)
+
+Needs network access to the npm registry (npm view, npm pack).
+scripts/check-ignored.sh converts .grype.yaml and runs this script.`
+
 function main() {
-  const [rulesPath, patchesPath, ...reportPaths] = process.argv.slice(2)
+  const args = process.argv.slice(2)
+  if (args.includes('-h') || args.includes('--help')) {
+    console.log(HELP)
+    return
+  }
+  const [rulesPath, patchesPath, ...reportPaths] = args
   if (!rulesPath || !patchesPath || reportPaths.length === 0) {
-    throw new Error('usage: check-ignored-fixes.js <ignore-rules.json> <patches.json> <grype-report.json>...')
+    console.error(HELP)
+    process.exit(1)
   }
 
   const rules = (JSON.parse(fs.readFileSync(rulesPath, 'utf8')) || []).filter((rule) => rule.vulnerability)
