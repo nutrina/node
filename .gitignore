@@ -1,1 +1,8 @@
 .local-test/
+
+# Reports and archives the CI scripts write to the current directory.
+govulncheck-*.json
+grype-*
+oci-image.tar
+scan-passed
+image-tags.txt

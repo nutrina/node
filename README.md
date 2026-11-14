@@ -113,6 +113,14 @@ After the scan, CI runs `scripts/check-ignored-fixes.js`. It fails the job befor
 
 The log and the job summary name the fix to apply. Apply it and remove the rule from `.grype.yaml` in the same change. A rule that matches nothing in a flavor gets a warning, not a failure, because the rules are shared across flavors.
 
+## Go vulnerability check
+
+For flavors with `"smoke": "go"`, CI runs `scripts/govulncheck.sh` after the smoke test. It installs [govulncheck](https://go.dev/doc/tutorial/govulncheck) inside the image (the version is `govulncheck` in `flavors.json`) and scans the toolchain binaries the image ships: `go`, `gofmt`, and the tools in `pkg/tool`.
+
+The job fails, and the image is not pushed, when a binary calls a vulnerable function and the advisory names a fixed version. Advisories the binaries do not call, or that have no fix, are listed and do not fail. The reports are uploaded with the Grype reports.
+
+The fix is almost always in the Go standard library, so it means a newer Go patch release. Move the flavor's `tag` and `base` in `flavors.json` to it, for example from `golang:1.27.3-alpine` to `golang:1.27.4-alpine`.
+
 Build one flavor locally:
 
 ```sh
@@ -125,7 +133,7 @@ docker run --rm nutrina/node:24.22.2-bookworm-slim cat /etc/node-image-patch.jso
 
 ## Run the CI checks locally
 
-CI runs the scan, the ignored-advisory check, and the smoke test from three scripts. `scripts/test-flavor.sh` builds a flavor and runs the same scripts on it, without pushing:
+CI runs the scan, the ignored-advisory check, the smoke test, and govulncheck for Go flavors from scripts. `scripts/test-flavor.sh` builds a flavor and runs the same scripts on it, without pushing:
 
 ```sh
 scripts/test-flavor.sh 24.22.2-alpine        # one flavor, this machine's platform
@@ -143,3 +151,4 @@ The scripts also run on their own:
 | `scripts/scan-image.sh <oci-archive> [out-dir] [platforms]` | Grype scan, fails at `failOn` |
 | `scripts/check-ignored.sh <grype-full-*.json>...` | Runs `check-ignored-fixes.js` with the rules from `.grype.yaml` |
 | `scripts/smoke-test.sh <flavor-tag> <image>` | The flavor's smoke test on a local image |
+| `scripts/govulncheck.sh <image> [out-dir]` | govulncheck on the Go binaries in a local image |

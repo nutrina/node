@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds one flavor locally and runs the same checks as CI: the Grype scan, the
-# ignored-advisory check, and the smoke test. Nothing is pushed.
+# ignored-advisory check, the smoke test and, for Go flavors, govulncheck.
+# Nothing is pushed.
 #
 #   scripts/test-flavor.sh [options] [flavor-tag...]
 #
@@ -13,6 +14,7 @@
 #   --skip-build      Reuse the archive from the last run of this flavor.
 #   --skip-scan       Skip the Grype scan and the ignored-advisory check.
 #   --skip-smoke      Skip the smoke test.
+#   --skip-govulncheck  Skip govulncheck on Go flavors.
 #   --out <dir>       Where archives and reports go (default: .local-test).
 #
 # Needs docker with buildx and the containerd image store (the Docker Desktop
@@ -22,7 +24,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="${root}/.local-test"
 platforms=""
-build=1 scan=1 smoke=1
+build=1 scan=1 smoke=1 govuln=1
 tags=()
 
 while [ "$#" -gt 0 ]; do
@@ -32,8 +34,9 @@ while [ "$#" -gt 0 ]; do
     --skip-build) build=0 ;;
     --skip-scan) scan=0 ;;
     --skip-smoke) smoke=0 ;;
+    --skip-govulncheck) govuln=0 ;;
     --out) out="${2:?--out needs a value}"; shift ;;
-    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option: $1" >&2; exit 1 ;;
     *) tags+=("$1") ;;
   esac
@@ -92,25 +95,36 @@ test_flavor() {
       --build-arg "BASE_IMAGE=$(jq -r '.base // ""' <<< "$flavor")" \
       --build-arg "IMAGE_REVISION=${revision}" \
       --provenance=false --sbom=false \
-      --output "type=oci,dest=${archive}"
+      --output "type=oci,dest=${archive}" || return 1
   fi
   [ -f "$archive" ] || { echo "no archive at ${archive}. Run without --skip-build." >&2; return 1; }
 
   if [ "$scan" -eq 1 ]; then
     echo "--- Grype scan"
-    "$root/scripts/scan-image.sh" "$archive" "$dir" "$platforms"
+    "$root/scripts/scan-image.sh" "$archive" "$dir" "$platforms" || return 1
     echo "--- Ignored advisories"
-    "$root/scripts/check-ignored.sh" "$dir"/grype-full-*.json
+    "$root/scripts/check-ignored.sh" "$dir"/grype-full-*.json || return 1
   fi
 
-  if [ "$smoke" -eq 1 ]; then
-    echo "--- Smoke test (${run_platform})"
+  local is_go=0
+  [ "$(jq -r '.smoke // "node"' <<< "$flavor")" = go ] && is_go=1
+
+  if [ "$smoke" -eq 1 ] || { [ "$govuln" -eq 1 ] && [ "$is_go" -eq 1 ]; }; then
     # Load the archive that was scanned, not a fresh build.
     local loaded
     loaded="$(docker load --platform "$run_platform" -i "$archive" | sed -n 's/^Loaded image ID: //p; s/^Loaded image: //p' | tail -1)"
     [ -n "$loaded" ] || { echo "docker load did not report an image" >&2; return 1; }
-    docker tag "$loaded" "$local_image"
-    "$root/scripts/smoke-test.sh" "$tag" "$local_image"
+    docker tag "$loaded" "$local_image" || return 1
+  fi
+
+  if [ "$smoke" -eq 1 ]; then
+    echo "--- Smoke test (${run_platform})"
+    "$root/scripts/smoke-test.sh" "$tag" "$local_image" || return 1
+  fi
+
+  if [ "$govuln" -eq 1 ] && [ "$is_go" -eq 1 ]; then
+    echo "--- govulncheck (${run_platform})"
+    "$root/scripts/govulncheck.sh" "$local_image" "$dir" || return 1
   fi
 
   echo "Reports in ${dir}"

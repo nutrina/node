@@ -170,8 +170,14 @@ jobs:
       - name: Smoke test
         run: scripts/smoke-test.sh "${{ matrix.flavor.tag }}" "local/image:${{ matrix.flavor.tag }}"
 
-      # Runs only after the scan, the ignored-advisory check, and the smoke test
-      # pass. Forks are excluded: main never reuses their archives.
+      # The Go toolchain binaries must not call a vulnerable function that a
+      # newer Go release fixes. A failure here skips the push.
+      - name: Go vulnerability check
+        if: matrix.flavor.smoke == 'go'
+        run: scripts/govulncheck.sh "local/image:${{ matrix.flavor.tag }}" .
+
+      # Runs only after the scan, the ignored-advisory check, the smoke test and,
+      # for Go, govulncheck pass. Forks are excluded: main never reuses their archives.
       - name: Keep the image for the merge
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-artifact@v7
@@ -187,7 +193,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: grype-${{ matrix.flavor.tag }}
-          path: grype-*
+          path: |
+            grype-*
+            govulncheck-*
           retention-days: 30
 
       - name: Upload amd64 Grype SARIF
