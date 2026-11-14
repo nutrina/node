@@ -19,7 +19,7 @@ The same pipeline also publishes patched Alpine images of two other official ima
 | `nutrina/node:24.22.2-alpine` | `node:24.22.2-alpine` |
 | `nutrina/node:24.22.2-bookworm-slim` | `node:24.22.2-bookworm-slim` |
 | `nutrina/nginx:1.31.8-alpine-slim` | `nginx:1.31.8-alpine-slim` |
-| `nutrina/golang:1.27.3-alpine` | `golang:1.27.3-alpine` |
+| `nutrina/golang:1.27.4-alpine` | `golang:1.27.4-alpine` |
 
 Each publish also pushes a date tag, such as `nutrina/node:24.22.2-bookworm-slim-20261029`. The version tag moves when that Node release is rebuilt with newer packages. The date tag stays on that build.
 
@@ -113,6 +113,14 @@ After the scan, CI runs `scripts/check-ignored-fixes.js`. It fails the job befor
 
 The log and the job summary name the fix to apply. Apply it and remove the rule from `.grype.yaml` in the same change. A rule that matches nothing in a flavor gets a warning, not a failure, because the rules are shared across flavors.
 
+## Go vulnerability check
+
+For flavors with `"smoke": "go"`, CI runs `scripts/govulncheck.sh` after the smoke test. It installs [govulncheck](https://go.dev/doc/tutorial/govulncheck) inside the image (the version is `govulncheck` in `flavors.json`) and scans the toolchain binaries the image ships: `go`, `gofmt`, and the tools in `pkg/tool`.
+
+The job fails, and the image is not pushed, when a binary calls a vulnerable function and the advisory names a fixed version. Advisories the binaries do not call, or that have no fix, are listed and do not fail. The reports are uploaded with the Grype reports.
+
+The fix is almost always in the Go standard library, so it means a newer Go patch release. Move the flavor's `tag` and `base` in `flavors.json` to it, for example from `golang:1.27.3-alpine` to `golang:1.27.4-alpine`.
+
 Build one flavor locally:
 
 ```sh
@@ -122,3 +130,25 @@ docker run --rm nutrina/node:24.22.2-bookworm-slim cat /etc/node-image-patch.jso
 ```
 
 `NODE_TAG` defaults to `24.22.2-bookworm-slim`.
+
+## Run the CI checks locally
+
+CI runs the scan, the ignored-advisory check, the smoke test, and govulncheck for Go flavors from scripts. `scripts/test-flavor.sh` builds a flavor and runs the same scripts on it, without pushing:
+
+```sh
+scripts/test-flavor.sh 24.22.2-alpine        # one flavor, this machine's platform
+scripts/test-flavor.sh                       # every flavor
+scripts/test-flavor.sh --all-platforms 24.22.2-alpine
+scripts/test-flavor.sh --skip-build 24.22.2-alpine   # rescan the last build
+```
+
+It needs Docker with buildx and the containerd image store (the Docker Desktop default), `grype`, `jq`, and `node`. When `yq` is not installed, the `mikefarah/yq` image is used instead. Archives and Grype reports go to `.local-test/`. By default only this machine's platform is built, so arm64-only or amd64-only findings can still fail in CI. Use `--all-platforms` to build and scan both.
+
+The scripts also run on their own:
+
+| Script | What it does |
+| --- | --- |
+| `scripts/scan-image.sh <oci-archive> [out-dir] [platforms]` | Grype scan, fails at `failOn` |
+| `scripts/check-ignored.sh <grype-full-*.json>...` | Runs `check-ignored-fixes.js` with the rules from `.grype.yaml` |
+| `scripts/smoke-test.sh <flavor-tag> <image>` | The flavor's smoke test on a local image |
+| `scripts/govulncheck.sh <image> [out-dir]` | govulncheck on the Go binaries in a local image |

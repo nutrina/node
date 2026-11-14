@@ -146,57 +146,17 @@ jobs:
           grype version
           skopeo --version
 
+      # Scan the archive that publish will copy. A failure here skips the push.
       - name: Security scan built image
         run: |
           set -euo pipefail
-          fail_on="${{ needs.prepare.outputs.fail_on }}"
-          case "$fail_on" in
-            critical) sevs='["Critical"]' ;;
-            high) sevs='["High","Critical"]' ;;
-            medium) sevs='["Medium","High","Critical"]' ;;
-            *) echo "unknown failOn: $fail_on" >&2; exit 1 ;;
-          esac
-
-          # Scan the archive that publish will copy. A failure here skips the push.
-          failed=0
-          IFS=',' read -ra platforms <<< "${{ needs.prepare.outputs.platforms }}"
-          for platform in "${platforms[@]}"; do
-            safe="${platform//\//-}"
-            echo "Scanning ${platform}"
-            grype "oci-archive:oci-image.tar" -c .grype.yaml --platform "$platform" --only-fixed -o json > "grype-fixed-${safe}.json"
-            grype "oci-archive:oci-image.tar" -c .grype.yaml --platform "$platform" -o json > "grype-full-${safe}.json"
-            grype "oci-archive:oci-image.tar" -c .grype.yaml --platform "$platform" --only-fixed -o sarif > "grype-${safe}.sarif"
-
-            echo "Fixable findings at or above ${fail_on} for ${platform}:"
-            jq -r --argjson sevs "$sevs" '
-              .matches[]
-              | select(.vulnerability.severity as $s | $sevs | index($s))
-              | "\(.vulnerability.severity)\t\(.artifact.name)@\(.artifact.version)\t\(.vulnerability.id)\t\(.artifact.type)"
-            ' "grype-fixed-${safe}.json" | sort -u
-
-            count=$(jq -r --argjson sevs "$sevs" '
-              [.matches[] | select(.vulnerability.severity as $s | $sevs | index($s))] | length
-            ' "grype-fixed-${safe}.json")
-            echo "${platform} count=${count}"
-            if [ "$count" -gt 0 ]; then
-              failed=1
-            fi
-          done
-
-          if [ "$failed" -ne 0 ]; then
-            echo "Grype reported fixable vulnerabilities. The image was not pushed." >&2
-            exit 1
-          fi
+          scripts/scan-image.sh oci-image.tar .
           touch scan-passed
 
       # Advisories ignored in .grype.yaml must not stay ignored once a fix can
       # be applied. A failure here skips the push.
       - name: Check ignored advisories for fixes
-        run: |
-          set -euo pipefail
-          rules="${RUNNER_TEMP}/grype-ignore-rules.json"
-          yq -o=json '.ignore // []' .grype.yaml > "$rules"
-          node scripts/check-ignored-fixes.js "$rules" patches.json grype-full-*.json
+        run: scripts/check-ignored.sh grype-full-*.json
 
       - name: Load the amd64 image
         run: |
@@ -208,37 +168,16 @@ jobs:
       # What the image is for, run for real: Node runs npm install, nginx serves a page, Go builds
       # a binary. A version check alone would pass on an image whose upgrade broke the program.
       - name: Smoke test
-        run: |
-          set -euo pipefail
-          image="local/image:${{ matrix.flavor.tag }}"
-          case "${{ matrix.flavor.smoke || 'node' }}" in
-            node)
-              expected="${{ matrix.flavor.nodeTag }}"
-              expected="v${expected%%-*}"
-              docker run --rm "$image" node -e "if (process.version !== '${expected}') { console.error(process.version); process.exit(1) } console.log(process.version)"
-              docker run --rm "$image" npm --version
-              docker run --rm --user node "$image" sh -c 'mkdir -p "$HOME/app" && cd "$HOME/app" && npm init -y >/dev/null && npm install --silent left-pad@1.0.0 && node -e "if (require(\"left-pad\")(\"x\", 3) !== \"  x\") process.exit(1)"'
-              ;;
-            nginx)
-              expected="nginx/${{ matrix.flavor.tag }}"
-              expected="${expected%%-*}"
-              docker run --rm "$image" nginx -v 2>&1 | tee /dev/stderr | grep -qx "nginx version: ${expected}"
-              container=$(docker run -d --rm -p 127.0.0.1:8080:80 "$image")
-              trap 'docker stop "$container" >/dev/null' EXIT
-              for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:8080/ && break; sleep 1; done
-              curl -fsS http://127.0.0.1:8080/ | grep -q "Welcome to nginx"
-              ;;
-            go)
-              expected="go${{ matrix.flavor.tag }}"
-              expected="${expected%%-*}"
-              docker run --rm "$image" go version | tee /dev/stderr | grep -q "^go version ${expected} "
-              docker run --rm "$image" sh -c 'mkdir /tmp/smoke && cd /tmp/smoke && go mod init smoke >/dev/null 2>&1 && printf "package main\n\nfunc main() { println(\"ok\") }\n" > main.go && CGO_ENABLED=0 go build -o smoke . && ./smoke'
-              ;;
-            *) echo "unknown smoke test: ${{ matrix.flavor.smoke }}" >&2; exit 1 ;;
-          esac
+        run: scripts/smoke-test.sh "${{ matrix.flavor.tag }}" "local/image:${{ matrix.flavor.tag }}"
 
-      # Runs only after the scan, the ignored-advisory check, and the smoke test
-      # pass. Forks are excluded: main never reuses their archives.
+      # The Go toolchain binaries must not call a vulnerable function that a
+      # newer Go release fixes. A failure here skips the push.
+      - name: Go vulnerability check
+        if: matrix.flavor.smoke == 'go'
+        run: scripts/govulncheck.sh "local/image:${{ matrix.flavor.tag }}" .
+
+      # Runs only after the scan, the ignored-advisory check, the smoke test and,
+      # for Go, govulncheck pass. Forks are excluded: main never reuses their archives.
       - name: Keep the image for the merge
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-artifact@v7
@@ -254,7 +193,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: grype-${{ matrix.flavor.tag }}
-          path: grype-*
+          path: |
+            grype-*
+            govulncheck-*
           retention-days: 30
 
       - name: Upload amd64 Grype SARIF

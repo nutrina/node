@@ -2,6 +2,7 @@
   "image": "nutrina/node",
   "platforms": ["linux/amd64", "linux/arm64"],
   "grype": "v0.121.0",
+  "govulncheck": "v1.9.0",
   "failOn": "medium",
   "flavors": [
     {
@@ -23,9 +24,9 @@
       "aliases": []
     },
     {
-      "tag": "1.27.3-alpine",
+      "tag": "1.27.4-alpine",
       "image": "nutrina/golang",
-      "base": "golang:1.27.3-alpine",
+      "base": "golang:1.27.4-alpine",
       "dockerfile": "apk.Dockerfile",
       "smoke": "go",
       "aliases": []
