@@ -122,3 +122,24 @@ docker run --rm nutrina/node:24.22.2-bookworm-slim cat /etc/node-image-patch.jso
 ```
 
 `NODE_TAG` defaults to `24.22.2-bookworm-slim`.
+
+## Run the CI checks locally
+
+CI runs the scan, the ignored-advisory check, and the smoke test from three scripts. `scripts/test-flavor.sh` builds a flavor and runs the same scripts on it, without pushing:
+
+```sh
+scripts/test-flavor.sh 24.22.2-alpine        # one flavor, this machine's platform
+scripts/test-flavor.sh                       # every flavor
+scripts/test-flavor.sh --all-platforms 24.22.2-alpine
+scripts/test-flavor.sh --skip-build 24.22.2-alpine   # rescan the last build
+```
+
+It needs Docker with buildx and the containerd image store (the Docker Desktop default), `grype`, `jq`, and `node`. When `yq` is not installed, the `mikefarah/yq` image is used instead. Archives and Grype reports go to `.local-test/`. By default only this machine's platform is built, so arm64-only or amd64-only findings can still fail in CI. Use `--all-platforms` to build and scan both.
+
+The scripts also run on their own:
+
+| Script | What it does |
+| --- | --- |
+| `scripts/scan-image.sh <oci-archive> [out-dir] [platforms]` | Grype scan, fails at `failOn` |
+| `scripts/check-ignored.sh <grype-full-*.json>...` | Runs `check-ignored-fixes.js` with the rules from `.grype.yaml` |
+| `scripts/smoke-test.sh <flavor-tag> <image>` | The flavor's smoke test on a local image |
