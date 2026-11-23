@@ -3,10 +3,10 @@
 Docker images that start from the official [Node.js image](https://hub.docker.com/_/node) and clear the vulnerabilities Grype can actually fix. CI builds each flavor, scans that image with Grype, and publishes it to Docker Hub only when the scan passes.
 
 ```dockerfile
-FROM nutrina/node:24.22.2-bookworm-slim
+FROM nutrina/node:24.22.3-bookworm-slim
 ```
 
-The images keep the official entrypoint, command, and root user, so they can replace `node:24.22.2-alpine` and `node:24.22.2-bookworm-slim`.
+The images keep the official entrypoint, command, and root user, so they can replace `node:24.22.3-alpine` and `node:24.22.3-bookworm-slim`.
 
 The same pipeline also publishes patched Alpine images of two other official images, `nutrina/nginx` and `nutrina/golang` (see [Other images](#other-images)).
 
@@ -16,8 +16,8 @@ The same pipeline also publishes patched Alpine images of two other official ima
 
 | Published image | Official base |
 | --- | --- |
-| `nutrina/node:24.22.2-alpine` | `node:24.22.2-alpine` |
-| `nutrina/node:24.22.2-bookworm-slim` | `node:24.22.2-bookworm-slim` |
+| `nutrina/node:24.22.3-alpine` | `node:24.22.3-alpine` |
+| `nutrina/node:24.22.3-bookworm-slim` | `node:24.22.3-bookworm-slim` |
 | `nutrina/nginx:1.31.8-alpine-slim` | `nginx:1.31.8-alpine-slim` |
 | `nutrina/golang:1.27.4-alpine` | `golang:1.27.4-alpine` |
 
@@ -30,7 +30,7 @@ Images are published for `linux/amd64` and `linux/arm64`.
 The Dockerfile runs `scripts/patch-image.js`.
 
 1. It upgrades distro packages (`apt-get upgrade` on Debian, `apk upgrade` on Alpine).
-2. It installs the npm version in `patches.json` when the base image has an older npm. Node 24.22.2 ships npm 11.19.1. The pin is npm 11.21.1.
+2. It installs the npm version in `patches.json` when the base image has an older npm. Node 24.22.3 ships npm 11.19.1. The pin is npm 11.21.1.
 3. It replaces the bundled npm dependencies named in `patches.json` with those exact versions, staying on the same major and never downgrading a newer copy.
 
 `/etc/node-image-patch.json` records the npm version and package versions that ended up in the image.
@@ -90,7 +90,7 @@ The published repository name is the `image` field in `flavors.json`.
 Add an object to `flavors.json`. `nodeTag` is the official tag. `tag` is the name published here. `aliases` are extra names on the same image.
 
 ```json
-{"tag": "24.22.2-alpine", "nodeTag": "24.22.2-alpine", "aliases": []}
+{"tag": "24.22.3-alpine", "nodeTag": "24.22.3-alpine", "aliases": []}
 ```
 
 ## Update the pins
@@ -124,22 +124,22 @@ The fix is almost always in the Go standard library, so it means a newer Go patc
 Build one flavor locally:
 
 ```sh
-docker build --build-arg NODE_TAG=24.22.2-bookworm-slim -t nutrina/node:24.22.2-bookworm-slim .
-docker run --rm nutrina/node:24.22.2-bookworm-slim node -p process.version
-docker run --rm nutrina/node:24.22.2-bookworm-slim cat /etc/node-image-patch.json
+docker build --build-arg NODE_TAG=24.22.3-bookworm-slim -t nutrina/node:24.22.3-bookworm-slim .
+docker run --rm nutrina/node:24.22.3-bookworm-slim node -p process.version
+docker run --rm nutrina/node:24.22.3-bookworm-slim cat /etc/node-image-patch.json
 ```
 
-`NODE_TAG` defaults to `24.22.2-bookworm-slim`.
+`NODE_TAG` defaults to `24.22.3-bookworm-slim`.
 
 ## Run the CI checks locally
 
 CI runs the scan, the ignored-advisory check, the smoke test, and govulncheck for Go flavors from scripts. `scripts/test-flavor.sh` builds a flavor and runs the same scripts on it, without pushing:
 
 ```sh
-scripts/test-flavor.sh 24.22.2-alpine        # one flavor, this machine's platform
+scripts/test-flavor.sh 24.22.3-alpine        # one flavor, this machine's platform
 scripts/test-flavor.sh                       # every flavor
-scripts/test-flavor.sh --all-platforms 24.22.2-alpine
-scripts/test-flavor.sh --skip-build 24.22.2-alpine   # rescan the last build
+scripts/test-flavor.sh --all-platforms 24.22.3-alpine
+scripts/test-flavor.sh --skip-build 24.22.3-alpine   # rescan the last build
 ```
 
 It needs Docker with buildx and the containerd image store (the Docker Desktop default), `grype`, `jq`, and `node`. When `yq` is not installed, the `mikefarah/yq` image is used instead. Archives and Grype reports go to `.local-test/`. By default only this machine's platform is built, so arm64-only or amd64-only findings can still fail in CI. Use `--all-platforms` to build and scan both.

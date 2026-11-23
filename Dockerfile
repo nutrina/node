@@ -2,13 +2,13 @@
 
 # Patched Node.js image. The official tag is the build arg, so one Dockerfile
 # covers every flavor listed in flavors.json:
-#   docker build --build-arg NODE_TAG=24.22.2-bookworm-slim -t nutrina/node:24.22.2-bookworm-slim .
+#   docker build --build-arg NODE_TAG=24.22.3-bookworm-slim -t nutrina/node:24.22.3-bookworm-slim .
 #
 # The build upgrades distro packages and replaces the npm dependencies named
 # in patches.json. Entrypoint, command, and the default root user stay as they
 # are on the official image.
 
-ARG NODE_TAG=24.22.2-bookworm-slim
+ARG NODE_TAG=24.22.3-bookworm-slim
 FROM node:${NODE_TAG}
 
 ARG NODE_TAG
