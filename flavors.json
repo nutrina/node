@@ -6,13 +6,13 @@
   "failOn": "medium",
   "flavors": [
     {
-      "tag": "24.22.2-alpine",
-      "nodeTag": "24.22.2-alpine",
+      "tag": "24.22.3-alpine",
+      "nodeTag": "24.22.3-alpine",
       "aliases": []
     },
     {
-      "tag": "24.22.2-bookworm-slim",
-      "nodeTag": "24.22.2-bookworm-slim",
+      "tag": "24.22.3-bookworm-slim",
+      "nodeTag": "24.22.3-bookworm-slim",
       "aliases": []
     },
     {
