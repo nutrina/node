@@ -132,6 +132,7 @@ jobs:
             NODE_TAG=${{ matrix.flavor.nodeTag }}
             BASE_IMAGE=${{ matrix.flavor.base }}
             IMAGE_REVISION=${{ github.sha }}
+            CACHE_DATE=${{ needs.prepare.outputs.date }}
           provenance: false
           sbom: false
           cache-from: type=gha,scope=${{ matrix.flavor.image || needs.prepare.outputs.image }}-${{ matrix.flavor.tag }}

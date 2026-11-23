@@ -94,6 +94,7 @@ test_flavor() {
       --build-arg "NODE_TAG=$(jq -r '.nodeTag // ""' <<< "$flavor")" \
       --build-arg "BASE_IMAGE=$(jq -r '.base // ""' <<< "$flavor")" \
       --build-arg "IMAGE_REVISION=${revision}" \
+      --build-arg "CACHE_DATE=$(date -u +%Y%m%d)" \
       --provenance=false --sbom=false \
       --output "type=oci,dest=${archive}" || return 1
   fi

@@ -21,6 +21,10 @@ LABEL org.opencontainers.image.source="https://github.com/nutrina/node" \
 
 # The official nginx and golang images run as root by default; USER is not changed, so the
 # image stays a drop-in replacement. /etc/apk-image-patch.txt records what was upgraded.
+#
+# CACHE_DATE is the build day (CI passes the run date). Changing it every day keeps a build cache
+# from serving an earlier day's `apk upgrade` layer when the base image has not changed.
+ARG CACHE_DATE=unknown
 RUN apk upgrade --no-cache --simulate 2>/dev/null | sed -n 's/^(.*) Upgrading //p' > /etc/apk-image-patch.txt \
     && apk upgrade --no-cache \
     && cat /etc/apk-image-patch.txt

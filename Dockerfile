@@ -24,6 +24,10 @@ USER root
 COPY patches.json /tmp/node-patch/patches.json
 COPY scripts/patch-image.js /tmp/node-patch/patch-image.js
 
+# CACHE_DATE is the build day (CI passes the run date). Changing it every day keeps a build cache
+# from serving an earlier day's package upgrades when the base image and patches have not changed.
+ARG CACHE_DATE=unknown
+
 RUN node /tmp/node-patch/patch-image.js /tmp/node-patch/patches.json "${NODE_TAG}" \
     && rm -rf /tmp/node-patch /root/.npm
 
